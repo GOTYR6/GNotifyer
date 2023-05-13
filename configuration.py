@@ -8,10 +8,11 @@ class Config:
                 default_config = json.load(f)
             self.LOGIN = default_config['LOGIN']
             self.PASSWORD = default_config['PASSWORD']
-            self.NOTIFYER_TIMEOUT = default_config['NOTIFYER_TIMEOUT']
             self.AUTH_PAGE = default_config['AUTH_PAGE']
             self.TASKS_PAGE = default_config['TASKS_PAGE']
+            self.NOTIFYER_TIMEOUT = default_config['NOTIFYER_TIMEOUT']
             self.DRIVER_TIMEOUT = default_config['DRIVER_TIMEOUT']
+            self.REMIND_TIMEOUT = default_config['REMIND_TIMEOUT']
             self.IO_FILE = default_config['IO_FILE']
             self.TOKEN = default_config['TOKEN']
             self.ALLOW_CHAT_ID = default_config['ALLOW_CHAT_ID']

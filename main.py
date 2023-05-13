@@ -5,33 +5,22 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as ec
 from urllib3.exceptions import ProtocolError, MaxRetryError
 from threading import Thread, Event
-from tqdm import tqdm
 from configuration import config
+from tqdm import tqdm
 import time
 from datetime import datetime as dt
-import pickle
 import telebot
 from telebot import types
 import requests
 import os
 import atexit
 from random import randrange
+import tempfile
+from PIL import ImageGrab
 
 event = Event()
 event.set()
-remind_time = time.time()
-if os.path.isfile(config.IO_FILE):
-    os.remove(config.IO_FILE)
-options = webdriver.ChromeOptions()
-options.add_argument('--allow-profiles-outside-user-dir')
-options.add_argument('--enable-profile-shortcut-manager')
-options.add_argument(r'user-data-dir=C:/User')
-options.add_argument('--profile-directory=Profile 1')
-options.add_experimental_option("detach", True)
-driver = webdriver.Chrome(options=options)
-driver.minimize_window()
-wait = WebDriverWait(driver, config.DRIVER_TIMEOUT)
-t_bot = telebot.TeleBot(config.TOKEN)
+bot = telebot.TeleBot(config.TOKEN)
 
 
 def get_chat_id():
@@ -39,7 +28,20 @@ def get_chat_id():
     print(requests.get(url).json())
 
 
-def get_authorized():
+def get_diver():
+    options = webdriver.ChromeOptions()
+    options.add_argument('--allow-profiles-outside-user-dir')
+    options.add_argument('--enable-profile-shortcut-manager')
+    options.add_argument(r'user-data-dir=C:/User')
+    options.add_argument('--profile-directory=Profile 1')
+    options.add_experimental_option("detach", True)
+    driver = webdriver.Chrome(options=options)
+    driver.minimize_window()
+    wait = WebDriverWait(driver, config.DRIVER_TIMEOUT)
+    return driver, wait
+
+
+def get_authorized(driver, wait):
     while True:
         try:
             driver.get(config.AUTH_PAGE)
@@ -59,7 +61,7 @@ def get_authorized():
                 continue
 
 
-def get_tasks_page(offset=0):
+def get_tasks_page(driver, wait, offset=0):
     while True:
         try:
             driver.get(config.TASKS_PAGE.format(offset))
@@ -67,7 +69,7 @@ def get_tasks_page(offset=0):
             break
         except (TimeoutException, NoSuchElementException):
             if ec.visibility_of_element_located((By.XPATH, config.EMAIL_FIELD)):
-                get_authorized()
+                get_authorized(driver, wait)
                 continue
 
 
@@ -96,50 +98,49 @@ def get_task_data(task) -> dict:
     return task_data
 
 
-def get_tasks() -> list:
+def get_tasks(exist_tasks_id, driver, wait):
     tasks_data = dict()
-    get_tasks_page()
+    get_tasks_page(driver, wait)
     tasks_quantity = int(driver.find_element(By.CLASS_NAME, config.TASKS_QUANTITY).text.split()[0])
     for offset in range(0, tasks_quantity, 100):
         if offset != 0:
-            get_tasks_page(offset)
+            get_tasks_page(driver, wait, offset)
         tasks = driver.find_elements(By.CLASS_NAME, config.TASKS_ROWS)
         cur_time = dt.now().strftime("%Y-%m-%d %H:%M:%S")
         for task in tqdm(tasks, desc=f'Parsing was started at {cur_time}', unit=' task'):
-            task_data = get_task_data(task)
+            task_data: dict = get_task_data(task)
             tasks_data.setdefault(task_data.get('id'), task_data)
-    try:
-        with open(config.IO_FILE, 'rb') as file:
-            exist_tasks_id: set = pickle.load(file)
-        parsed_tasks_id: set = {task_id for task_id in tasks_data}
-        with open(config.IO_FILE, 'wb') as file:
-            pickle.dump(parsed_tasks_id, file)
+    if exist_tasks_id:
+        parsed_tasks_id = {task_id for task_id in tasks_data}
         new_tasks_id = parsed_tasks_id.difference(exist_tasks_id)
         if new_tasks_id:
             new_tasks_data = sorted([tasks_data.get(task_id) for task_id in new_tasks_id],
                                     key=lambda new_task: dt.strptime(new_task.get('deadline'), "%d.%m.%Y %H:%M"))
-            return new_tasks_data
-    except FileNotFoundError:
+            return parsed_tasks_id, new_tasks_data
+        else:
+            return parsed_tasks_id, None
+    else:
         parsed_tasks_id = {task_id for task_id in tasks_data}
-        with open(config.IO_FILE, 'wb') as file:
-            pickle.dump(parsed_tasks_id, file)
+        return parsed_tasks_id, None
 
 
 def start_notifyer(timeout: int):
-    global remind_time
-    t_bot.send_message(chat_id=config.CHAT_ID,
-                       text='Notifyer is running, you will be notified about new tasks asap👍')
+    exist_tasks_id = set()
+    remind_time = time.time()
+    driver, wait = get_diver()
+    bot.send_message(chat_id=config.CHAT_ID,
+                     text='Notifyer is running, you will be notified about new tasks asap👍')
     while not event.is_set():
         try:
-            new_tasks: list = get_tasks()
+            exist_tasks_id, new_tasks = get_tasks(exist_tasks_id, driver, wait)
             if new_tasks:
                 print(f'Founded {len(new_tasks)} tasks')
                 message = f'Количество новых задач: {len(new_tasks)}\n'
                 for index, task in enumerate(new_tasks, start=1):
                     message += f"{index}) [{task.get('id')}]({task.get('link')}) Крайний срок: {task.get('deadline')}\n"
-                t_bot.send_message(chat_id=config.CHAT_ID, text=message, parse_mode='Markdown')
-            if time.time() - remind_time > 1800 and not event.is_set():
-                t_bot.send_message(chat_id=config.CHAT_ID, text='Notifyer is still in progress!')
+                bot.send_message(chat_id=config.CHAT_ID, text=message, parse_mode='Markdown')
+            if time.time() - remind_time > config.REMIND_TIMEOUT and not event.is_set():
+                bot.send_message(chat_id=config.CHAT_ID, text='Notifyer is still in progress!')
                 remind_time = time.time()
             event.wait(timeout + randrange(timeout))
         except KeyboardInterrupt:
@@ -148,51 +149,75 @@ def start_notifyer(timeout: int):
             break
         except (Exception,):
             continue
-    t_bot.send_message(chat_id=config.CHAT_ID, text='Notifyer has been stopped🛑')
-    if os.path.isfile(config.IO_FILE):
-        os.remove(config.IO_FILE)
+    driver.quit()
+    bot.send_message(chat_id=config.CHAT_ID, text='Notifyer has been stopped⛔️')
 
 
-@t_bot.message_handler(commands=['start'])
-def welcome(message):
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+@bot.message_handler(commands=['start'])
+def welcome(message: types.Message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
     startup = types.KeyboardButton('Start notifyer')
     shutdown = types.KeyboardButton('Shut down notifyer')
+    screen = types.KeyboardButton('Take screenshot')
     turnoff = types.KeyboardButton('Turn off PC')
-    markup.add(startup, shutdown, turnoff)
-    t_bot.send_message(message.chat.id, 'Welcome! How can I help you?👋', reply_markup=markup)
+    markup.add(startup, shutdown, screen, turnoff)
+    bot.send_message(message.chat.id, 'Welcome! How can I help you?👋', reply_markup=markup)
 
 
-@t_bot.message_handler(regexp='Start notifyer')
-def remote_startup(message):
-    global remind_time
-    remind_time = time.time()
+@bot.message_handler(regexp='Start notifyer')
+def remote_startup(message: types.Message):
     if event.is_set() and message.chat.id in config.ALLOW_CHAT_ID:
         event.clear()
         config.CHAT_ID = message.chat.id
         return start_notifyer(timeout=config.NOTIFYER_TIMEOUT)
     if not event.is_set() and message.chat.id in config.ALLOW_CHAT_ID:
-        return t_bot.send_message(message.chat.id, 'Notifyer is already running!👌')
+        return bot.send_message(message.chat.id, 'Notifyer is already running!👌')
 
 
-@t_bot.message_handler(regexp='Shut down notifyer')
-def remote_shutdown(message):
+@bot.message_handler(regexp='Shut down notifyer')
+def remote_shutdown(message: types.Message):
     if not event.is_set() and message.chat.id in config.ALLOW_CHAT_ID:
         return event.set()
     if event.is_set() and message.chat.id in config.ALLOW_CHAT_ID:
-        return t_bot.send_message(message.chat.id, 'Notifyer is already has been stopped!✋')
+        return bot.send_message(message.chat.id, 'Notifyer is already has been stopped!✋')
 
 
-@t_bot.message_handler(regexp='Turn off PC')
-def confirm_turnoff(message):
-    if event.is_set() and message.chat.id in config.ALLOW_CHAT_ID:
+@bot.message_handler(regexp='Take screenshot')
+def screenshot(message: types.Message):
+    if message.chat.id in config.ALLOW_CHAT_ID:
+        path = tempfile.gettempdir() + 'screenshot.png'
+        ImageGrab.grab().save(path, 'PNG')
+        return bot.send_document(message.chat.id, open(path, 'rb'))
+
+
+@bot.message_handler(regexp='Turn off PC')
+def confirm_turnoff(message: types.Message):
+    if message.chat.id in config.ALLOW_CHAT_ID:
         markup = types.InlineKeyboardMarkup(row_width=2)
         confirm = types.InlineKeyboardButton('Yes', callback_data='confirm')
         decline = types.InlineKeyboardButton('No', callback_data='decline')
         markup.add(confirm, decline)
-        t_bot.send_message(message.chat.id, 'Are you sure you want to turn off your PC?', reply_markup=markup)
-    else:
-        t_bot
+        if event.is_set():
+            return bot.send_message(message.chat.id, 'Are you sure you want to turn off your PC?', reply_markup=markup)
+        if not event.is_set():
+            return bot.send_message(message.chat.id,
+                                    'Warning! Notifyer is still in progress, do you still want to turn off your PC?',
+                                    reply_markup=markup)
+
+
+@bot.callback_query_handler(func=lambda call: True)
+def handle_inline(call):
+    try:
+        if call.message:
+            if call.data == 'confirm':
+                bot.edit_message_text(chat_id=call.message.chat.id, message_id=call.message.message_id,
+                                      text='Turning off your PC🖥🔌', reply_markup=None)
+                return os.system("shutdown -s -t 0")
+            if call.data == 'decline':
+                bot.delete_message(chat_id=call.message.chat.id, message_id=call.message.message_id)
+                return bot.answer_callback_query(call.id, 'You canceled the PC shutdown❌')
+    except Exception as e:
+        print(e)
 
 
 @atexit.register
@@ -202,5 +227,5 @@ def stop_notifyer():
 
 
 if __name__ == "__main__":
-    t_bot.infinity_polling()
+    bot.infinity_polling()
     # start_notifyer(config.INTERVAL)
