@@ -17,6 +17,7 @@ class Config:
             self.TOKEN = default_config['TOKEN']
             self.ALLOW_CHAT_ID = default_config['ALLOW_CHAT_ID']
             self.CHAT_ID = default_config['CHAT_ID']
+            self.LINK = default_config['LINK']
             self.EMAIL_FIELD = default_config['AUTH_ELEMENTS']['EMAIL_FIELD']
             self.PASSWORD_FIELD = default_config['AUTH_ELEMENTS']['PASSWORD_FIELD']
             self.LOGIN_BUTTON = default_config['AUTH_ELEMENTS']['LOGIN_BUTTON']

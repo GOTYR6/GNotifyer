@@ -71,45 +71,61 @@ def get_tasks_page(driver, wait, offset=0):
             if ec.visibility_of_element_located((By.XPATH, config.EMAIL_FIELD)):
                 get_authorized(driver, wait)
                 continue
+            else:
+                continue
 
 
 def get_task_data(task) -> dict:
     task_data, deadline = dict(), dict()
 
     def get_id():
-        task_data.setdefault('id', task.find_element(By.CLASS_NAME, config.TASK_ID).text)
-
-    def get_link():
-        task_data.setdefault('link', task.find_element(By.CLASS_NAME, config.TASK_LINK).get_attribute('href'))
+        task_data['id'] = task.find_element(By.CLASS_NAME, config.TASK_ID).text
+        return
 
     def get_date():
-        deadline.setdefault('date', task.find_element(By.CLASS_NAME, config.TASK_DEADLINE_DATE).text)
+        deadline['date'] = task.find_element(By.CLASS_NAME, config.TASK_DEADLINE_DATE).text
+        return
 
     def get_time():
-        deadline.setdefault('time', task.find_element(By.CLASS_NAME, config.TASK_DEADLINE_TIME).text)
+        deadline['time'] = task.find_element(By.CLASS_NAME, config.TASK_DEADLINE_TIME).text
+        return
 
     t_get_id = Thread(target=get_id)
-    t_get_link = Thread(target=get_link)
-    t_get_date = Thread(target=get_date())
-    t_get_time = Thread(target=get_time())
-    t_get_id.start(), t_get_link.start(), t_get_date.start(), t_get_time.start()
-    t_get_id.join(), t_get_link.join(), t_get_date.join(), t_get_time.join()
-    task_data.setdefault('deadline', ' '.join((deadline.get('date'), deadline.get('time'))))
+    t_get_date = Thread(target=get_date)
+    t_get_time = Thread(target=get_time)
+    t_get_id.start()
+    t_get_date.start()
+    t_get_time.start()
+    t_get_id.join()
+    t_get_date.join()
+    t_get_time.join()
+    task_data['link'] = ''.join((config.LINK.format(task_data.get('id'))))
+    task_data['deadline'] = ' '.join((deadline.get('date'), deadline.get('time')))
     return task_data
 
 
 def get_tasks(exist_tasks_id, driver, wait):
-    tasks_data = dict()
-    get_tasks_page(driver, wait)
-    tasks_quantity = int(driver.find_element(By.CLASS_NAME, config.TASKS_QUANTITY).text.split()[0])
-    for offset in range(0, tasks_quantity, 100):
-        if offset != 0:
-            get_tasks_page(driver, wait, offset)
-        tasks = driver.find_elements(By.CLASS_NAME, config.TASKS_ROWS)
-        cur_time = dt.now().strftime("%Y-%m-%d %H:%M:%S")
-        for task in tqdm(tasks, desc=f'Parsing was started at {cur_time}', unit=' task'):
-            task_data: dict = get_task_data(task)
-            tasks_data.setdefault(task_data.get('id'), task_data)
+    # т.к. сломана пагинация на фронте и одна и та же задача может встретиться при перемещении по страницам
+    # ищем данные задач до тех пор, пока их итоговое количество не будет равно общему числу задач
+    while True:
+        tasks_data = dict()
+        get_tasks_page(driver, wait)
+        tasks_quantity = int(driver.find_element(By.CLASS_NAME, config.TASKS_QUANTITY).text.split()[0])
+        print(f'\nFounded: {tasks_quantity} tasks')
+        for offset in range(0, tasks_quantity, 100):
+            if offset != 0:
+                get_tasks_page(driver, wait, offset)
+            tasks = driver.find_elements(By.CLASS_NAME, config.TASKS_ROWS)
+            cur_time = dt.now().strftime("%Y-%m-%d %H:%M:%S")
+            for task in tqdm(tasks, desc=f'Parsing was started at {cur_time}', unit=' task'):
+                task_data: dict = get_task_data(task)
+                tasks_data[task_data.get('id')] = task_data
+        if len(tasks_data) == tasks_quantity:
+            break
+        else:
+            print('Not all tasks were found. Retry after 20 seconds')
+            time.sleep(config.DRIVER_TIMEOUT)
+            continue
     if exist_tasks_id:
         parsed_tasks_id = {task_id for task_id in tasks_data}
         new_tasks_id = parsed_tasks_id.difference(exist_tasks_id)
@@ -134,7 +150,7 @@ def start_notifyer(timeout: int):
         try:
             exist_tasks_id, new_tasks = get_tasks(exist_tasks_id, driver, wait)
             if new_tasks:
-                print(f'Founded {len(new_tasks)} tasks')
+                print(f'Founded {len(new_tasks)} new tasks')
                 message = f'Количество новых задач: {len(new_tasks)}\n'
                 for index, task in enumerate(new_tasks, start=1):
                     message += f"{index}) [{task.get('id')}]({task.get('link')}) Крайний срок: {task.get('deadline')}\n"
